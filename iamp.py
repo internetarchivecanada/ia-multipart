@@ -121,6 +121,13 @@ def main():
         hdrs = {"x-archive-auto-make-bucket": "1"}
         for kv in a.metadata:
             k, v = kv.split(":", 1)
+            # HTTP headers are latin-1; an em-dash in a title crashes urllib.
+            # IA's convention (same as the ia CLI): percent-encode non-ASCII
+            # values and wrap them as uri(...).
+            try:
+                v.encode("latin-1")
+            except UnicodeEncodeError:
+                v = "uri(" + urllib.parse.quote(v) + ")"
             hdrs[f"x-archive-meta-{k}"] = v
         for kv in a.header:
             k, v = kv.split(":", 1)
