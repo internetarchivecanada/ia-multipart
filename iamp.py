@@ -36,7 +36,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import threading
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 S3 = "https://s3.us.archive.org"
@@ -85,6 +87,11 @@ def main():
                     help="part size MiB (min 5, AWS convention; default 100 "
                          "= a death costs at most ~100 MiB)")
     ap.add_argument("--retries", type=int, default=6)
+    ap.add_argument("--parallel", type=int, default=1,
+                    help="concurrent part uploads. Parts are independent by "
+                         "protocol and IA accepts concurrent PUTs (probed "
+                         "2026-08-26: 4 workers ran 1.7x serial). Worth >1 "
+                         "only when a single stream does not fill the uplink.")
     ap.add_argument("--metadata", action="append", default=[],
                     metavar="K:V", help="x-archive-meta-* if item is created")
     ap.add_argument("--header", action="append", default=[], metavar="K:V")
@@ -133,22 +140,36 @@ def main():
 
     uid = state["upload_id"]
     t0 = time.time()
-    with open(src, "rb") as f:
-        for pn in range(1, n_parts + 1):
-            if str(pn) in state["parts"]:
-                continue
-            f.seek((pn - 1) * part_bytes)
-            blob = f.read(part_bytes)
-            md5 = hashlib.md5(blob).hexdigest()
-            url = f"{base}?partNumber={pn}&uploadId={uid}"
-            retrying(lambda: request("PUT", url, data=blob),
-                     a.retries, f"part {pn}")
+    lock = threading.Lock()   # journal writes and reads of the shared file
+    src_f = open(src, "rb")
+
+    def send(pn):
+        with lock:                       # one reader position at a time
+            src_f.seek((pn - 1) * part_bytes)
+            blob = src_f.read(part_bytes)
+        md5 = hashlib.md5(blob).hexdigest()
+        url = f"{base}?partNumber={pn}&uploadId={uid}"
+        retrying(lambda: request("PUT", url, data=blob),
+                 a.retries, f"part {pn}")
+        with lock:
             state["parts"][str(pn)] = md5
             journal.write_text(json.dumps(state))     # checkpoint
             done = len(state["parts"])
-            mb_s = done * part_bytes / 1048576 / max(time.time() - t0, 1)
-            print(f"part {pn}/{n_parts} up "
-                  f"({100*done//n_parts}%, ~{mb_s:.1f} MiB/s)", flush=True)
+        sent = done * part_bytes / 1048576
+        print(f"part {pn}/{n_parts} up "
+              f"({100*done//n_parts}%, ~{sent/max(time.time()-t0,1):.1f} MiB/s)",
+              flush=True)
+
+    pending = [pn for pn in range(1, n_parts + 1)
+               if str(pn) not in state["parts"]]
+    if a.parallel > 1:
+        with ThreadPoolExecutor(a.parallel) as ex:
+            # list() so a failed part raises here rather than being dropped
+            list(ex.map(send, pending))
+    else:
+        for pn in pending:
+            send(pn)
+    src_f.close()
 
     xml = "<CompleteMultipartUpload>" + "".join(
         f'<Part><PartNumber>{i}</PartNumber><ETag>"{state["parts"][str(i)]}"'
