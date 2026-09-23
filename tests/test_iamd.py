@@ -124,9 +124,9 @@ def test_md5_mismatch_keeps_the_partial_and_raises(server, monkeypatch, tmp_path
     assert os.path.exists(dest + ".part") and not os.path.exists(dest)
 
 
-def test_never_more_than_four_streams(server, monkeypatch, tmp_path):
-    """Brewster: 'only do 4 parallel downloader max so we dont badger the
-    internet archive' -- asking for 16 gets 4."""
+def test_streams_per_file_are_capped(server, monkeypatch, tmp_path):
+    """Brewster: the cap is per item/file ('items generally live on different
+    machines'), default 4, ceiling 8 -- asking for 16 gets 8."""
     _stub_manifest(monkeypatch, [f"{server}/good/f"])
     seen = []
     real = iamd.ThreadPoolExecutor
@@ -135,8 +135,8 @@ def test_never_more_than_four_streams(server, monkeypatch, tmp_path):
             seen.append(max_workers); super().__init__(max_workers=max_workers, **kw)
     monkeypatch.setattr(iamd, "ThreadPoolExecutor", Spy)
     iamd.download("i", "f", str(tmp_path / "f"), jobs=16, part_mb=1, progress=lambda s: None)
-    assert seen == [4]
-    assert iamd.MAX_JOBS == 4
+    assert seen == [8]
+    assert iamd.MAX_JOBS == 8 and iamd.DEFAULT_JOBS == 4
 
 
 def test_a_slow_node_is_abandoned_for_the_fast_one(server, monkeypatch, tmp_path):

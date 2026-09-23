@@ -7,7 +7,7 @@ Python 3 (and your existing `ia` configuration for uploads).
 | | tool | what it does |
 |---|---|---|
 | up | `iamp.py` | S3 multipart upload, journaled parts, kill-and-resume |
-| down | `iamd.py` | Range-part download over up to 4 streams, adaptive across the item's datanodes, journaled parts, md5-proved |
+| down | `iamd.py` | Range-part download over 4 (up to 8) streams per file, adaptive across the item's datanodes, journaled parts, md5-proved |
 
 ```
 ./iamp.py my-item /path/to/big-file.gz --metadata collection:opensource
@@ -81,7 +81,7 @@ once).
 
 ```
 ./iamd.py etd-work-files abstract-texts.jsonl.gz ./abstract-texts.jsonl.gz
-  --jobs 4        parallel streams -- hard-capped at 4 in code (MAX_JOBS)
+  --jobs 4        parallel streams for THIS file (default 4, ceiling 8)
   --part-mb 64    part size; a death costs at most this much
 ```
 
@@ -109,11 +109,12 @@ is rediscovered; a stream crawling under 0.3x the best route switches route
 mid-part and continues from the byte it reached. A solo-node item (`d1 ==
 d2`) simply has one direct route plus the redirect.
 
-**Four streams, never more.** The cap is in code, not a default: we are
-guests on archive.org's datanodes and four is already four times one
-connection. Measured on the 11 GB file above: single curl 4.4 MB/s at best,
-four static streams 3.3 MB/s (two thirds of them stuck on the slow node),
-four adaptive streams 4.4 MB/s sustained.
+**The cap is per file.** One file lives on one datanode pair, and that pair
+is what we must not badger: default 4 streams, hard ceiling 8 (`MAX_JOBS`,
+in code). Different items live on different machines, so fetching several
+items at once is not counted against it. Measured on the 11 GB file above:
+single curl 4.4 MB/s at best, four static streams 3.3 MB/s (two thirds of
+them stuck on the slow node), four adaptive streams 4.4–4.8 MB/s sustained.
 
 Library use: `iamd.download(item, name, dest, jobs=4, part_mb=64, seed=None)
 -> md5`. Raises on size/md5 mismatch and keeps the partial for a retry.

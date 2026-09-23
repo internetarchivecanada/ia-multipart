@@ -35,8 +35,10 @@ is the retry/backoff; four streams to one node is still within the cap.
     iamd.py ITEM NAME DEST [--jobs 4] [--part-mb 64]
     (library: iamd.download(item, name, dest, jobs=4, part_mb=64) -> md5)
 
-At most FOUR streams per file, ever (MAX_JOBS): we are a guest on
-archive.org's datanodes, and four is already 4x one connection.
+Streams are capped PER FILE (default 4, ceiling 8 -- MAX_JOBS): one file
+lives on one datanode pair, and that pair is what we must not badger.
+Different items live on different machines, so fetching several items at
+once is not multiplied against this cap.
 
 Neither `ia download` (python) nor `ia-cli` (-j = concurrent FILES) does this.
 """
@@ -53,10 +55,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 UA = "iamd/0.1 (+github internetarchivecanada/ia-multipart)"
 # Brewster 2026-09-23: "I hope we only do 4 parallel downloader max so we
-# dont badger the internet archive."  A hard ceiling, not a default: the
-# whole point of one tool is that nobody wires up 16 streams by accident.
-# Downloads only -- "uploads is a different matter" (iamp.py is not bound by this).
-MAX_JOBS = 4
+# dont badger the internet archive" -- then: "I would only restrict the 4 (or
+# maybe it should be 8) on each item or file, since items generally live on
+# different machines."  So the cap is PER FILE (one datanode pair), a hard
+# ceiling of 8 with a default of 4, and it says nothing about how many
+# different items a machine may be fetching at once. Downloads only --
+# "uploads is a different matter" (iamp.py is not bound by this).
+MAX_JOBS = 8
+DEFAULT_JOBS = 4
 STALL = int(os.environ.get("IAMD_STALL", "120"))        # per-read socket timeout
 TRIES = int(os.environ.get("IAMD_PART_TRIES", "8"))
 CHECK_EVERY = float(os.environ.get("IAMD_CHECK_EVERY", "5"))   # s between rate checks
@@ -221,7 +227,7 @@ def _fetch_part(router, start, end, fd, hdr):
     return got
 
 
-def download(item, name, dest, jobs=4, part_mb=64, hdr=None, progress=print,
+def download(item, name, dest, jobs=DEFAULT_JOBS, part_mb=64, hdr=None, progress=print,
              seed=None):
     """Parallel resumable download; returns the verified md5. Raises on a
     size or md5 mismatch (the partial and journal are kept for a retry).
@@ -229,7 +235,7 @@ def download(item, name, dest, jobs=4, part_mb=64, hdr=None, progress=print,
     `seed`: a file holding a CONTIGUOUS PREFIX of the target (a curl -C -
     partial, say). It is moved into place and every part that lies wholly
     inside it is credited, so switching tools mid-download loses nothing."""
-    jobs = max(1, min(int(jobs), MAX_JOBS))       # never more than 4 streams
+    jobs = max(1, min(int(jobs), MAX_JOBS))       # per-file ceiling
     hdr = dict(hdr or {}, **{"User-Agent": UA})
     size, md5, routes = manifest(item, name, hdr)
     tmp, journal = dest + ".part", dest + ".parts.json"
@@ -308,8 +314,8 @@ def download(item, name, dest, jobs=4, part_mb=64, hdr=None, progress=print,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("item"); ap.add_argument("name"); ap.add_argument("dest")
-    ap.add_argument("--jobs", type=int, default=int(os.environ.get("IAMD_JOBS", "4")),
-                    help=f"parallel streams, capped at {MAX_JOBS}")
+    ap.add_argument("--jobs", type=int, default=int(os.environ.get("IAMD_JOBS", str(DEFAULT_JOBS))),
+                    help=f"parallel streams for this file (default {DEFAULT_JOBS}, ceiling {MAX_JOBS})")
     ap.add_argument("--part-mb", type=int, default=int(os.environ.get("IAMD_PART_MB", "64")))
     a = ap.parse_args()
     try:
