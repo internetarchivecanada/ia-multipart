@@ -197,6 +197,13 @@ def test_a_contiguous_prefix_seeds_the_journal(server, monkeypatch, tmp_path):
     assert sorted(fetched) == [2 * 1024 * 1024, 3 * 1024 * 1024]   # parts 0,1 credited
 
 
+def test_a_finished_file_is_not_refetched(server, monkeypatch, tmp_path):
+    _stub_manifest(monkeypatch, [f"{server}/good/f"])
+    dest = str(tmp_path / "f"); open(dest, "wb").write(BODY)
+    monkeypatch.setattr(iamd, "_fetch_part", lambda *a, **k: pytest.fail("fetched"))
+    assert iamd.download("i", "f", dest, progress=lambda s: None) == MD5
+
+
 def test_plan_parts_covers_the_file_exactly():
     ps = iamd.plan_parts(len(BODY), 1)
     assert ps[0][1] == 0 and ps[-1][2] == len(BODY) - 1

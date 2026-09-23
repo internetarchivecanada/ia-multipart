@@ -233,6 +233,14 @@ def download(item, name, dest, jobs=4, part_mb=64, hdr=None, progress=print,
     hdr = dict(hdr or {}, **{"User-Agent": UA})
     size, md5, routes = manifest(item, name, hdr)
     tmp, journal = dest + ".part", dest + ".parts.json"
+    if os.path.exists(dest) and os.path.getsize(dest) == size and md5:
+        h = hashlib.md5()                     # idempotent: a finished file is not refetched
+        with open(dest, "rb") as f:
+            for b in iter(lambda: f.read(1 << 22), b""):
+                h.update(b)
+        if h.hexdigest() == md5:
+            progress(f"{name}: already complete at {dest} (md5 {md5})")
+            return md5
     parts = plan_parts(size, part_mb)
     done = set()
     try:
