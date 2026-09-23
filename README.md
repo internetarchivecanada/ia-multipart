@@ -1,7 +1,13 @@
 # ia-multipart
 
-**Resumable large-file uploads to archive.org.** One small tool, no
-dependencies beyond Python 3 and your existing `ia` configuration.
+**Resumable large-file uploads to archive.org — and, since 2026-09-23,
+parallel resumable downloads.** Two small tools, no dependencies beyond
+Python 3 (and your existing `ia` configuration for uploads).
+
+| | tool | what it does |
+|---|---|---|
+| up | `iamp.py` | S3 multipart upload, journaled parts, kill-and-resume |
+| down | `iamd.py` | Range-part download over up to 4 streams, adaptive across the item's datanodes, journaled parts, md5-proved |
 
 ```
 ./iamp.py my-item /path/to/big-file.gz --metadata collection:opensource
@@ -70,6 +76,50 @@ once).
   over (the orphaned upload id is eventually garbage-collected by IA).
 - One file per invocation, by design. Loop for many files; the interesting
   problem was never the loop.
+
+## Downloads: `iamd.py`
+
+```
+./iamd.py etd-work-files abstract-texts.jsonl.gz ./abstract-texts.jsonl.gz
+  --jobs 4        parallel streams -- hard-capped at 4 in code (MAX_JOBS)
+  --part-mb 64    part size; a death costs at most this much
+```
+
+**Why.** One HTTP stream from far away is slow whatever the pipe: from the
+US Midwest we measured 0.4–1.5 MB/s per connection to archive.org datanodes,
+so an 11 GB file was a 75-minute single stream on a good day and never
+finished on a laptop that goes offline. Neither `ia download` nor `ia-cli`
+splits a file into ranges (`ia-cli -j` parallelises across *files*).
+
+**How.** The item's `/metadata` gives the file's size, md5 and datanodes
+(`d1`, `d2`, `dir`). The file is split into fixed parts; workers fetch
+`Range:` requests and `pwrite()` each part at its offset into `<dest>.part`;
+every finished part is journaled in `<dest>.parts.json`, so a death costs at
+most one part and rerunning the same command resumes. When all parts are in,
+the whole file's md5 is checked against the manifest and it is renamed into
+place. A `seed=` (library) lets a `curl -C -` partial be credited instead of
+refetched.
+
+**Routes are adaptive** because not every item is on two servers and the two
+do not serve at the same rate (measured the same minute: one node of a pair
+at 1.47 MB/s, the other at 0.43, and `archive.org/download` redirecting to
+the slow one). Each route is probed once, then new parts go to the fastest by
+a per-stream throughput average, with 1-in-8 exploration so a recovered node
+is rediscovered; a stream crawling under 0.3x the best route switches route
+mid-part and continues from the byte it reached. A solo-node item (`d1 ==
+d2`) simply has one direct route plus the redirect.
+
+**Four streams, never more.** The cap is in code, not a default: we are
+guests on archive.org's datanodes and four is already four times one
+connection. Measured on the 11 GB file above: single curl 4.4 MB/s at best,
+four static streams 3.3 MB/s (two thirds of them stuck on the slow node),
+four adaptive streams 4.4 MB/s sustained.
+
+Library use: `iamd.download(item, name, dest, jobs=4, part_mb=64, seed=None)
+-> md5`. Raises on size/md5 mismatch and keeps the partial for a retry.
+
+Tests: `python3 -m pytest tests/` (needs `pytest`; a local Range-honouring
+HTTP server stands in for the datanodes, including a throttled one).
 
 Built by the Internet Archive Europe ETD project
 (github.com/internetarchivecanada/etd). Tests ran against items in
