@@ -68,7 +68,23 @@ TRIES = int(os.environ.get("IAMD_PART_TRIES", "8"))
 CHECK_EVERY = float(os.environ.get("IAMD_CHECK_EVERY", "5"))   # s between rate checks
 SLOW_FRAC = float(os.environ.get("IAMD_SLOW_FRAC", "0.3"))    # switch below this x best
 MAX_SWITCHES = 6                                               # per part, no ping-pong
-CHUNK = 256 << 10            # read size; also the granularity of the rate check
+# READ SIZE AND RATE-CHECK GRANULARITY ARE THE SAME NUMBER, AND THAT IS THE
+# BUG. 64 KiB, not 256: HTTPResponse.read(n) blocks until it has n bytes, and
+# the socket timeout is per-recv, so a dribbling route keeps resetting it
+# while read() sits there. The rate check below runs BETWEEN reads, so it
+# cannot get a turn until the whole chunk arrives -- at 1 KB/s that is 262
+# seconds per check on a 256 KiB chunk. The route-switch guard was therefore
+# unreachable code for the one input it was written for: a trickler.
+#
+# The same defect was found and fixed in an ETD extractor's own download loop on
+# 2026-09-25 (READ_CHUNK 1 MiB -> 64 KiB) after three separate runs were lost
+# to it: a datanode on 09-22 (01:42-06:24), kb.dk at 15 KB/s on 09-23, and a
+# worker wedged on web.archive.org for 41 minutes at 0% CPU on 09-25. This
+# file has its own copy of the pattern and needs its own fix.
+#
+# A correctness setting, not tuning: at 64 KiB even a 1 KB/s trickle returns
+# inside the 120s socket timeout, so the rate test always gets a turn.
+CHUNK = 64 << 10
 
 
 class Router:
