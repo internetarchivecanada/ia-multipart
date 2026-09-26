@@ -78,6 +78,35 @@ def retrying(fn, tries, what):
             time.sleep(wait)
 
 
+def meta_headers(pairs):
+    """--metadata K:V pairs as x-archive-meta headers (applied only when the
+    upload creates the item).
+
+    A key given more than once is a LIST, and IA wants one numbered header per
+    value -- x-archive-meta01-collection, x-archive-meta02-collection -- as the
+    ia CLI sends it. One header per key kept only the LAST value: items created
+    with `--metadata collection:web --metadata collection:<other>` silently
+    left `web` out.
+
+    HTTP headers are latin-1; an em-dash in a title crashes urllib. IA's
+    convention (same as the ia CLI): percent-encode non-ASCII values and wrap
+    them as uri(...)."""
+    keys = [kv.split(":", 1)[0] for kv in pairs]
+    hdrs, nth = {}, {}
+    for kv in pairs:
+        k, v = kv.split(":", 1)
+        try:
+            v.encode("latin-1")
+        except UnicodeEncodeError:
+            v = "uri(" + urllib.parse.quote(v) + ")"
+        if keys.count(k) > 1:
+            nth[k] = nth.get(k, 0) + 1
+            hdrs[f"x-archive-meta{nth[k]:02d}-{k}"] = v
+        else:
+            hdrs[f"x-archive-meta-{k}"] = v
+    return hdrs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("item")
@@ -119,16 +148,7 @@ def main():
 
     if not state:
         hdrs = {"x-archive-auto-make-bucket": "1"}
-        for kv in a.metadata:
-            k, v = kv.split(":", 1)
-            # HTTP headers are latin-1; an em-dash in a title crashes urllib.
-            # IA's convention (same as the ia CLI): percent-encode non-ASCII
-            # values and wrap them as uri(...).
-            try:
-                v.encode("latin-1")
-            except UnicodeEncodeError:
-                v = "uri(" + urllib.parse.quote(v) + ")"
-            hdrs[f"x-archive-meta-{k}"] = v
+        hdrs.update(meta_headers(a.metadata))
         for kv in a.header:
             k, v = kv.split(":", 1)
             hdrs[k] = v
