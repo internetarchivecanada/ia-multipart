@@ -62,7 +62,8 @@ iamp.py ITEM FILE
   --parallel 1           concurrent part uploads (IA accepts them; probed at
                          1.7x serial with 4 workers — worth >1 only when one
                          stream can't fill your uplink)
-  --metadata K:V         x-archive-meta-* (applies if the item is created)
+  --metadata K:V         x-archive-meta-* (applies if the item is created);
+                         repeat a key for a list: --metadata collection:a --metadata collection:b
   --header K:V           any extra header
 ```
 
