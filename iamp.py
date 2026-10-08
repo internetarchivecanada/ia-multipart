@@ -21,11 +21,22 @@ file as <file>.iamp.json. Rerunning the same command skips finished parts.
 The journal is per (file, item, remote name); a changed file (size or mtime)
 invalidates it and starts a fresh upload.
 
+One part or less: a file no bigger than one part goes up as a single plain
+PUT (with Content-MD5, so IA still verifies it). A one-part multipart upload
+costs IA two catalog tasks (the part, then the assembly) and resumes no
+better than a PUT, since a death costs one part either way. --multipart
+forces the multipart path anyway.
+
+--header k:v goes on the initiate, the single PUT, and the completion
+request: IA queues the follow-up task (e.g. derive) when the upload
+completes, so a header like x-archive-queue-derive:0 must be on that request.
+
 Usage:
   iamp.py ITEM FILE [--remote-name NAME] [--part-mb 100] [--retries 6]
-          [--metadata collection:opensource ...] [--header k:v ...]
+          [--metadata collection:opensource ...] [--header k:v ...] [--multipart]
 Metadata headers only apply when the upload CREATES the item (same as ia).
 """
+import base64
 import argparse
 import configparser
 import hashlib
@@ -124,6 +135,8 @@ def main():
     ap.add_argument("--metadata", action="append", default=[],
                     metavar="K:V", help="x-archive-meta-* if item is created")
     ap.add_argument("--header", action="append", default=[], metavar="K:V")
+    ap.add_argument("--multipart", action="store_true",
+                    help="use multipart even for a file that fits in one part")
     a = ap.parse_args()
 
     src = a.file
@@ -146,12 +159,25 @@ def main():
             print("source or target changed since the journal; starting fresh")
             state = None
 
+    user_hdrs = dict(kv.split(":", 1) for kv in a.header)
+    create_hdrs = {"x-archive-auto-make-bucket": "1",
+                   **meta_headers(a.metadata), **user_hdrs}
+
+    if n_parts <= 1 and not a.multipart and not state:
+        # fits in one part: one PUT, one IA task; resuming would cost the same
+        blob = src.read_bytes()
+        digest = hashlib.md5(blob)
+        hdrs = {**create_hdrs,
+                "Content-MD5": base64.b64encode(digest.digest()).decode()}
+        retrying(lambda: request("PUT", base, data=blob, headers=hdrs),
+                 a.retries, "put")
+        journal.unlink(missing_ok=True)       # a stale journal from an older version of the file
+        print(f"put {size} bytes (md5 {digest.hexdigest()})\n"
+              f"complete: https://archive.org/download/{a.item}/{remote}")
+        return 0
+
     if not state:
-        hdrs = {"x-archive-auto-make-bucket": "1"}
-        hdrs.update(meta_headers(a.metadata))
-        for kv in a.header:
-            k, v = kv.split(":", 1)
-            hdrs[k] = v
+        hdrs = dict(create_hdrs)
         st, body = retrying(
             lambda: request("POST", base + "?uploads", headers=hdrs),
             a.retries, "initiate")
@@ -203,7 +229,8 @@ def main():
         f"</ETag></Part>" for i in range(1, n_parts + 1)
     ) + "</CompleteMultipartUpload>"
     retrying(lambda: request("POST", f"{base}?uploadId={uid}",
-                             data=xml.encode()), a.retries, "complete")
+                             data=xml.encode(), headers=user_hdrs),
+             a.retries, "complete")
     journal.unlink(missing_ok=True)
     print(f"complete: https://archive.org/download/{a.item}/{remote}\n"
           f"(assembly takes ~a minute; the item updates after derive)")

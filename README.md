@@ -51,6 +51,15 @@ kill-and-resume mid-upload:
    placeholder page, ~137 KB) for a minute or so after completion. Verify by
    size *and* checksum, never by "the URL returned 200".
 7. Minimum part size follows the AWS convention (5 MiB for non-final parts).
+8. Each multipart upload becomes **two catalog tasks** on the item: an
+   `s3-put` for the part data and an `s3-put-complete-multipart` for the
+   assembly. The follow-up task is queued when the upload *completes*:
+   completion tasks carried `"next_cmd": "derive"` although the initiate
+   request had sent `x-archive-queue-derive:0` (seen 2026-10-07 in
+   `ia tasks`). So `iamp.py` now sends `--header` values on the completion
+   request too, and a file that fits in one part goes up as one plain PUT
+   (one task; `x-archive-queue-derive` is honored on plain PUTs, as with
+   `ia upload`).
 
 ## Usage
 
@@ -64,7 +73,11 @@ iamp.py ITEM FILE
                          stream can't fill your uplink)
   --metadata K:V         x-archive-meta-* (applies if the item is created);
                          repeat a key for a list: --metadata collection:a --metadata collection:b
-  --header K:V           any extra header
+  --header K:V           any extra header (sent on the initiate, the single PUT
+                         and the completion request), e.g. x-archive-queue-derive:0
+  --multipart            use multipart even when the file fits in one part
+                         (by default such a file is one PUT with Content-MD5:
+                         one IA task instead of two, and a death costs the same)
 ```
 
 Credentials come from `~/.config/internetarchive/ia.ini` (run `ia configure`
